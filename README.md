@@ -14,6 +14,8 @@ This repository is intended for:
 - integration into quantitative portfolio construction workflows,
 - deployment as a standalone PyTorch package.
 
+For the original tensorflow implementation, see the [RIEnet repository](https://github.com/bongiornoc/RIEnet)
+
 ## What this package provides
 
 - End-to-end training on a realized-variance objective for GMV portfolios
