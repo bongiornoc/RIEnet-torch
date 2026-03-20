@@ -1,0 +1,60 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "rienet-torch"
+dynamic = ["version"]
+description = "PyTorch implementation of RIEnet for global minimum-variance portfolio optimization"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [
+    {name = "Christian Bongiorno"},
+]
+maintainers = [
+    {name = "Christian Bongiorno"},
+]
+keywords = [
+    "pytorch",
+    "portfolio-optimization",
+    "global-minimum-variance",
+    "covariance-estimation",
+    "finance",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Office/Business :: Financial :: Investment",
+]
+dependencies = [
+    "numpy>=1.26.0",
+    "torch>=2.5.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "build>=1.2",
+    "pytest>=9.0",
+    "twine>=6.0",
+]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+include = ["rienet_torch", "rienet_torch.*"]
+
+[tool.setuptools.dynamic]
+version = {attr = "rienet_torch.version.__version__"}
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"

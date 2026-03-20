@@ -1,0 +1,15 @@
+include LICENSE
+include README.md
+include pyproject.toml
+graft src/rienet_torch
+prune .local
+prune .github
+prune .pytest_cache
+prune notes
+prune tests
+prune tools
+prune src/rienet_torch.egg-info
+global-exclude __pycache__
+global-exclude *.py[cod]
+global-exclude *.so
+global-exclude .DS_Store

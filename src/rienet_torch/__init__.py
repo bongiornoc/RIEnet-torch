@@ -1,0 +1,67 @@
+"""
+Public package entrypoint for RIEnet Torch.
+
+This package exposes:
+- ``RIEnetLayer``: end-to-end GMV pipeline module.
+- ``LagTransformLayer``: standalone lag/return non-linearity module.
+- ``CorrelationEigenTransformLayer``: standalone correlation cleaning module.
+- ``EigenWeightsLayer``: standalone weight-construction module.
+- ``variance_loss_function``: GMV variance objective.
+
+The public API is exposed through standard PyTorch ``nn.Module`` semantics.
+"""
+
+from .trainable_layers import (
+    RIEnetLayer,
+    LagTransformLayer,
+    LagTransformVariant,
+    CorrelationEigenTransformLayer,
+)
+from .ops_layers import EigenWeightsLayer
+from .losses import variance_loss_function
+from . import trainable_layers, ops_layers, losses, lag_transform
+from .version import __version__
+
+__author__ = "Christian Bongiorno"
+__email__ = "christian.bongiorno@centralesupelec.fr"
+
+__all__ = [
+    "RIEnetLayer",
+    "LagTransformLayer",
+    "LagTransformVariant",
+    "EigenWeightsLayer",
+    "CorrelationEigenTransformLayer",
+    "variance_loss_function",
+    "print_citation",
+    "trainable_layers",
+    "ops_layers",
+    "losses",
+    "lag_transform",
+    "__version__",
+]
+
+
+def print_citation() -> None:
+    """Print citation information for academic use."""
+    citation = """
+    Please cite the following references when using RIEnet:
+
+    Bongiorno, C., Manolakis, E., & Mantegna, R. N. (2025).
+    Neural Network-Driven Volatility Drag Mitigation under Aggressive Leverage.
+    Proceedings of the 6th ACM International Conference on AI in Finance (ICAIF '25).
+
+    Bongiorno, C., Manolakis, E., & Mantegna, R. N. (2026).
+    End-to-End Large Portfolio Optimization for Variance Minimization with Neural Networks through Covariance Cleaning.
+    The Journal of Finance and Data Science
+
+    For software citation:
+
+    @software{rienet2025,
+        title={RIEnet: A Compact Rotational Invariant Estimator Network for Global Minimum-Variance Optimisation},
+        author={Christian Bongiorno},
+        year={2025},
+        version={VERSION},
+        url={https://github.com/bongiornoc/RIEnet}
+    }
+    """
+    print(citation.replace("VERSION", __version__))
