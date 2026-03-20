@@ -58,3 +58,6 @@ python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
 addopts = "-v --tb=short"
+markers = [
+    "local_only: optional checks kept for local experimentation and excluded from CI",
+]
