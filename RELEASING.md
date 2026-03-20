@@ -29,20 +29,18 @@ If `rienet-torch` is not available on PyPI, the clean fallback is `rienet-pytorc
 
 ```bash
 python -m pip install -e ".[dev]"
-python -m pytest tests
+python -m pytest -m "not local_only" tests
 python -m build
 python -m twine check dist/*
 ```
 
 3. Commit the version bump.
-4. Create and push a tag:
+4. Push the commit to `main`.
 
-```bash
-git tag vX.Y.Z
-git push origin vX.Y.Z
-```
-
-5. GitHub Actions will build and publish automatically to PyPI.
+5. GitHub Actions will build and publish automatically to PyPI when the
+   version bump lands on `main`.
+6. If you need to retry a release without another commit, run the
+   `Publish to PyPI` workflow manually from the GitHub Actions UI.
 
 ## TestPyPI flow
 
