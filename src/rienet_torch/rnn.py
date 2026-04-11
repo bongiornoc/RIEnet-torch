@@ -49,6 +49,10 @@ def dropout_mask_like(x: torch.Tensor, rate: float) -> torch.Tensor:
     return mask / keep_prob
 
 
+def resolve_training(module: nn.Module, training: Optional[bool]) -> bool:
+    return module.training if training is None else bool(training)
+
+
 class KerasDense(nn.Module):
     def __init__(
         self,
@@ -135,7 +139,7 @@ class KerasGRULayer(nn.Module):
 
         batch, timesteps, _ = inputs.shape
         h = torch.zeros((batch, self.units), dtype=inputs.dtype, device=inputs.device)
-        is_training = bool(training)
+        is_training = resolve_training(self, training)
 
         input_masks = None
         recurrent_masks = None
@@ -228,7 +232,7 @@ class KerasLSTMLayer(nn.Module):
         batch, timesteps, _ = inputs.shape
         h = torch.zeros((batch, self.units), dtype=inputs.dtype, device=inputs.device)
         c = torch.zeros((batch, self.units), dtype=inputs.dtype, device=inputs.device)
-        is_training = bool(training)
+        is_training = resolve_training(self, training)
 
         input_masks = None
         recurrent_masks = None
@@ -290,7 +294,8 @@ class KerasBidirectional(nn.Module):
             self.backward_layer.build(input_shape)
 
     def forward(self, sequences: torch.Tensor, training: Optional[bool] = None) -> torch.Tensor:
-        y = self.forward_layer(sequences, training=training)
-        y_rev = self.backward_layer(sequences, training=training)
+        is_training = resolve_training(self, training)
+        y = self.forward_layer(sequences, training=is_training)
+        y_rev = self.backward_layer(sequences, training=is_training)
         y_rev = torch.flip(y_rev, dims=[1])
         return torch.cat([y, y_rev], dim=-1)

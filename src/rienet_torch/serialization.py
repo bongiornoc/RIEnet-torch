@@ -13,24 +13,42 @@ from typing import Any, Type
 import torch
 
 
-def _dummy_tensor_from_shape(shape: Any) -> torch.Tensor | None:
+def _dummy_tensor_from_shape(
+    shape: Any,
+    *,
+    dtype: torch.dtype = torch.float32,
+    device: torch.device | str = "cpu",
+) -> torch.Tensor | None:
     if shape is None:
         return None
     if isinstance(shape, torch.Size):
         shape = tuple(shape)
     if isinstance(shape, (list, tuple)):
-        return torch.zeros(tuple(shape), dtype=torch.float32)
+        return torch.zeros(tuple(shape), dtype=dtype, device=device)
     raise TypeError(f"Unsupported build shape spec: {shape!r}")
 
 
-def _materialize_from_build_spec(module: torch.nn.Module, build_spec: Any) -> None:
+def _materialize_from_build_spec(
+    module: torch.nn.Module,
+    build_spec: Any,
+    *,
+    dtype: torch.dtype = torch.float32,
+    device: torch.device | str = "cpu",
+) -> None:
     if build_spec is None:
         return
-    dummy_args = [_dummy_tensor_from_shape(shape) for shape in build_spec]
+    dummy_args = [_dummy_tensor_from_shape(shape, dtype=dtype, device=device) for shape in build_spec]
     while dummy_args and dummy_args[-1] is None:
         dummy_args.pop()
     with torch.no_grad():
         module(*dummy_args)
+
+
+def _floating_state_dtype(state_dict: dict[str, torch.Tensor]) -> torch.dtype:
+    for tensor in state_dict.values():
+        if isinstance(tensor, torch.Tensor) and torch.is_floating_point(tensor):
+            return tensor.dtype
+    return torch.float32
 
 
 def save_module(module: torch.nn.Module, path: str | Path) -> None:
@@ -83,9 +101,12 @@ def load_module(
     payload = torch.load(path, map_location="cpu")
     if "config" in payload and hasattr(cls, "from_config"):
         module = cls.from_config(payload["config"])
+    elif "config" in payload:
+        module = cls(**payload["config"])
     else:
         module = cls()
     if "build_spec" in payload:
-        _materialize_from_build_spec(module, payload["build_spec"])
+        materialize_dtype = _floating_state_dtype(payload["state_dict"])
+        _materialize_from_build_spec(module, payload["build_spec"], dtype=materialize_dtype)
     module.load_state_dict(payload["state_dict"], strict=strict)
     return module

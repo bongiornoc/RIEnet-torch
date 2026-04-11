@@ -30,7 +30,7 @@ from .ops_layers import (
     EigenvectorRescalingLayer,
     EigenProductLayer,
 )
-from .rnn import KerasDense, KerasGRULayer, KerasLSTMLayer, KerasBidirectional
+from .rnn import KerasDense, KerasGRULayer, KerasLSTMLayer, KerasBidirectional, resolve_training
 
 LagTransformVariant = Literal["compact", "per_lag"]
 RecurrentCellType = Literal["GRU", "LSTM"]
@@ -190,10 +190,11 @@ class DeepLayer(nn.Module):
         if not self.built:
             self.build(inputs.shape)
             self.to(device=inputs.device, dtype=inputs.dtype)
+        is_training = resolve_training(self, training)
         x = inputs
         for dense in self.hidden_layers:
             x = dense(x)
-            x = F.dropout(x, p=self.dropout_rate, training=bool(training and self.dropout_rate > 0.0))
+            x = F.dropout(x, p=self.dropout_rate, training=is_training and self.dropout_rate > 0.0)
         return self.final_dense(x)
 
     def get_config(self) -> dict:
@@ -406,10 +407,11 @@ class DeepRecurrentLayer(nn.Module):
         if not self.built:
             self.build(inputs.shape)
             self.to(device=inputs.device, dtype=inputs.dtype)
+        is_training = resolve_training(self, training)
         x = inputs
         for layer in self.recurrent_layers:
-            x = layer(x, training=training)
-        outputs = self.final_deep_dense(x, training=training)
+            x = layer(x, training=is_training)
+        outputs = self.final_deep_dense(x, training=is_training)
         if self._normalizer is not None:
             outputs = self._normalizer(outputs)
         return outputs.squeeze(-1)
@@ -655,11 +657,6 @@ class CorrelationEigenTransformLayer(nn.Module):
             ``'correlation'``, ``'inverse_correlation'``, ``'eigenvalues'``,
             ``'eigenvectors'``, ``'inverse_eigenvalues'``.
         """
-        if not self.built:
-            attr_shape = None if attributes is None else attributes.shape
-            self.build(correlation_matrix.shape, attr_shape)
-            self.to(device=correlation_matrix.device, dtype=correlation_matrix.dtype)
-
         if correlation_matrix.dim() != 3:
             raise ValueError("correlation_matrix must have shape (batch, n_assets, n_assets).")
         if correlation_matrix.shape[-2] != correlation_matrix.shape[-1]:
@@ -672,6 +669,12 @@ class CorrelationEigenTransformLayer(nn.Module):
                 raise ValueError("Batch mismatch between correlation_matrix and attributes.")
             if attributes.dim() == 3 and correlation_matrix.shape[-1] != attributes.shape[1]:
                 raise ValueError("Asset-dimension mismatch between correlation_matrix and attributes.")
+
+        if not self.built:
+            attr_shape = None if attributes is None else attributes.shape
+            self.build(correlation_matrix.shape, attr_shape)
+            self.to(device=correlation_matrix.device, dtype=correlation_matrix.dtype)
+        is_training = resolve_training(self, training)
 
         components = self._resolve_output_components(output_type) if output_type is not None else list(self.output_components)
         need_correlation = "correlation" in components
@@ -711,7 +714,7 @@ class CorrelationEigenTransformLayer(nn.Module):
                 raise ValueError("Inconsistent eigenvalue feature width across calls.")
             transformed_inverse_eigenvalues = self.eigenvalue_transform(
                 eigenvalue_features,
-                training=training,
+                training=is_training,
             )
             if "inverse_eigenvalues" in components:
                 results["inverse_eigenvalues"] = transformed_inverse_eigenvalues.unsqueeze(-1)
@@ -1298,9 +1301,20 @@ class RIEnetLayer(nn.Module):
             - ``transformed_std``: ``(batch, n_stocks, 1)``
             - ``input_transformed``: ``(batch, n_stocks, n_days)``
         """
+        inputs = ensure_dense_tensor(inputs)
+        if inputs.dim() != 3:
+            raise ValueError("inputs must have shape (batch_size, n_stocks, n_days).")
+        if not torch.is_floating_point(inputs):
+            raise TypeError("inputs must be a floating-point tensor.")
+        if 0 in inputs.shape:
+            raise ValueError("inputs must have non-empty batch, asset, and time dimensions.")
+        if not torch.isfinite(inputs).all():
+            raise ValueError("inputs must contain only finite values.")
+
         if not self.built:
             self.build(inputs.shape)
             self.to(device=inputs.device, dtype=inputs.dtype)
+        is_training = resolve_training(self, training)
 
         need_precision = self._need_precision
         need_covariance = self._need_covariance
@@ -1365,7 +1379,7 @@ class RIEnetLayer(nn.Module):
             attributes=attributes,
             output_type=spectral_components,
             include_raw_eigenvectors=need_fast_weight_path,
-            training=training,
+            training=is_training,
         )
         spectral_results = spectral_outputs if isinstance(spectral_outputs, dict) else {spectral_components[0]: spectral_outputs}
         eigenvectors = spectral_results.get("eigenvectors")

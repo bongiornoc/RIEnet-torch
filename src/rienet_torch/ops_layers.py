@@ -22,7 +22,8 @@ class StandardDeviationLayer(nn.Module):
     Module for computing sample standard deviation and mean.
 
     This module computes the sample standard deviation and mean along a
-    specified axis, with optional demeaning for statistical preprocessing.
+    specified axis. Inputs are always centered before the variance is
+    computed; ``demean`` selects the denominator convention.
 
     Parameters
     ----------
@@ -227,6 +228,19 @@ class SpectralDecompositionLayer(nn.Module):
         """
         covariance32, original_dtype = ensure_float32(covariance_matrix)
         eigenvalues, eigenvectors = torch.linalg.eigh(covariance32)
+        if eigenvalues.shape[-1] > 1:
+            gaps = eigenvalues[..., 1:] - eigenvalues[..., :-1]
+            scale = torch.maximum(
+                eigenvalues.abs().amax(dim=-1, keepdim=True),
+                torch.ones_like(eigenvalues[..., :1]),
+            )
+            eps = epsilon_for_dtype(covariance32.dtype, 1e-7).to(covariance32.device)
+            near_repeated = gaps.abs() <= torch.sqrt(eps) * scale
+            if bool(near_repeated.any().detach().cpu()):
+                # torch.linalg.eigh has undefined eigenvector gradients for
+                # repeated eigenvalues. Values are still correct, but detaching
+                # avoids NaN gradients in zero/rank-deficient covariance cases.
+                eigenvectors = eigenvectors.detach()
         eigenvalues = eigenvalues.unsqueeze(-1)
         return restore_dtype(eigenvalues, original_dtype), restore_dtype(eigenvectors, original_dtype)
 
@@ -411,7 +425,9 @@ class CustomNormalizationLayer(nn.Module):
         n = torch.tensor(float(x_work.shape[self.axis]), dtype=x_work.dtype, device=x_work.device)
         denom_axis = x_work.sum(dim=self.axis, keepdim=True)
         if self.mode == "sum":
-            x_work = n * x_work / torch.maximum(denom_axis, epsilon)
+            sign = torch.where(denom_axis >= 0, torch.ones_like(denom_axis), -torch.ones_like(denom_axis))
+            safe_denom = torch.where(denom_axis.abs() < epsilon, sign * epsilon, denom_axis)
+            x_work = n * x_work / safe_denom
         elif self.mode == "inverse":
             x_work = torch.maximum(x_work, epsilon)
             inv = torch.pow(x_work, -self.inverse_power)
