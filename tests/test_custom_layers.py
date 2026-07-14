@@ -6,7 +6,6 @@ import torch
 
 from rienet_torch.ops_layers import (
     CovarianceLayer,
-    CustomNormalizationLayer,
     EigenProductLayer,
     EigenvectorRescalingLayer,
     EigenWeightsLayer,
@@ -84,17 +83,58 @@ def test_eigenvector_rescaling_and_eigen_weights_formulas():
     expected = raw / raw.sum(axis=1, keepdims=True)
     np.testing.assert_allclose(weights_no_std.detach().cpu().numpy().squeeze(-1), expected, rtol=1e-5, atol=1e-6)
 
-    fixed_vectors = torch.tensor([[[1.0, 0.0, 0.0], [0.2, 0.9, 0.1], [0.3, 0.2, 0.8]]], dtype=torch.float32)
-    fixed_inv = torch.tensor([[[1.2], [0.7], [1.1]]], dtype=torch.float32)
-    fixed_std = torch.tensor([[[0.9], [1.0], [1.1]]], dtype=torch.float32)
-    fixed_weights = weights_layer(fixed_vectors, fixed_inv, fixed_std)
-    ev = fixed_vectors.numpy()
-    inv_eig = fixed_inv.numpy().reshape(1, 3)
-    inv_std = fixed_std.numpy().reshape(1, 3)
-    c = ev.sum(axis=1)
-    raw = np.einsum("bik,bk,bk,bi->bi", ev, inv_eig, c, inv_std)
-    expected = raw / raw.sum(axis=1, keepdims=True)
-    np.testing.assert_allclose(fixed_weights.detach().cpu().numpy().squeeze(-1), expected, rtol=1e-6, atol=1e-7)
+
+def test_eigen_weights_layer_matches_exact_gmv_from_covariance():
+    covariance = torch.tensor(
+        [
+            [[2.0, 1.0, 0.0], [1.0, 2.0 / 3.0, 0.0], [0.0, 0.0, 1.0]],
+            [[1.0, 0.2, 0.1], [0.2, 2.0, 0.3], [0.1, 0.3, 1.5]],
+        ],
+        dtype=torch.float32,
+    )
+    std = torch.sqrt(torch.diagonal(covariance, dim1=-2, dim2=-1))
+    inverse_std = torch.reciprocal(std)
+    correlation = covariance * inverse_std.unsqueeze(-1) * inverse_std.unsqueeze(-2)
+    eigenvalues, eigenvectors = torch.linalg.eigh(correlation)
+
+    weights = EigenWeightsLayer(name="exact_gmv")(
+        eigenvectors,
+        torch.reciprocal(eigenvalues),
+        inverse_std.unsqueeze(-1),
+    )
+
+    ones = torch.ones_like(weights)
+    raw_expected = torch.linalg.solve(covariance, ones)
+    expected = raw_expected / raw_expected.sum(dim=-2, keepdim=True)
+    torch.testing.assert_close(weights, expected, rtol=1e-5, atol=1e-6)
+    torch.testing.assert_close(
+        weights.sum(dim=-2),
+        torch.ones_like(weights.sum(dim=-2)),
+        rtol=1e-6,
+        atol=1e-6,
+    )
+    assert float(weights[0, 0, 0]) < 0.0
+
+
+def test_eigen_weights_layer_uses_inverse_std_on_both_sides():
+    eigenvectors = torch.eye(3).unsqueeze(0)
+    inverse_eigenvalues = torch.ones(1, 3)
+    inverse_std = torch.tensor([[0.5, 1.0, 2.0]])
+
+    weights = EigenWeightsLayer(name="two_sided_scale")(
+        eigenvectors,
+        inverse_eigenvalues,
+        inverse_std,
+    )
+
+    raw_expected = inverse_std.square()
+    expected = raw_expected / raw_expected.sum(dim=-1, keepdim=True)
+    torch.testing.assert_close(
+        weights.squeeze(-1),
+        expected,
+        rtol=1e-6,
+        atol=1e-7,
+    )
 
 
 def test_correlation_eigen_transform_contracts_and_errors():

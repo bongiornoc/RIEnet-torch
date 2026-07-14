@@ -28,6 +28,11 @@ def test_sum_normalization_near_zero_denominator_stays_finite():
     assert torch.isfinite(y).all()
 
 
+def test_custom_normalization_rejects_invalid_mode_at_construction():
+    with pytest.raises(ValueError, match="mode"):
+        CustomNormalizationLayer(mode="bad", name="invalid_mode")
+
+
 def test_standard_deviation_demean_controls_unbiased_denominator_only():
     x = torch.tensor([[[1.0, 2.0, 3.0]]], dtype=torch.float32)
 

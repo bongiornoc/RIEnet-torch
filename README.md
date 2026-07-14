@@ -14,7 +14,22 @@ This repository is intended for:
 - integration into quantitative portfolio construction workflows,
 - deployment as a standalone PyTorch package.
 
-For the original tensorflow implementation, see the [RIEnet repository](https://github.com/bongiornoc/RIEnet)
+For the original TensorFlow implementation, see the [RIEnet repository](https://github.com/bongiornoc/RIEnet).
+
+## Release Notes
+
+### 0.1.4
+
+This release fixes a correctness bug in `EigenWeightsLayer` when `inverse_std`
+is provided. Earlier versions applied inverse standard deviations only to the
+left side of the inverse-covariance product, so the normalized result was not
+generally the exact unconstrained GMV portfolio. The module now applies the
+scaling on both sides and matches the direct solution obtained from the full
+covariance matrix while retaining the efficient spectral computation.
+Users who call `EigenWeightsLayer` with `inverse_std` should upgrade to 0.1.4.
+
+The variance loss now also rejects incompatible shapes and non-finite inputs
+instead of silently broadcasting them or propagating invalid values.
 
 ## What this package provides
 
@@ -181,11 +196,11 @@ from rienet_torch import EigenWeightsLayer
 
 layer = EigenWeightsLayer(name="gmv_weights")
 
-eigenvectors = torch.randn(8, 20, 20)
+eigenvectors = torch.linalg.qr(torch.randn(8, 20, 20)).Q
 inverse_eigenvalues = torch.rand(8, 20, 1)
 inverse_std = torch.rand(8, 20, 1)
 
-# Full GMV-like branch (includes inverse_std scaling)
+# Exact GMV branch from a correlation eigensystem and inverse standard deviations
 weights = layer(eigenvectors, inverse_eigenvalues, inverse_std)
 
 # Covariance-eigensystem branch (inverse_std omitted)
@@ -194,6 +209,11 @@ weights_cov = layer(eigenvectors, inverse_eigenvalues)
 
 Notes:
 - `inverse_std` is optional by design.
+- When `inverse_std` is provided, the eigenvectors and inverse eigenvalues must
+  describe the corresponding correlation matrix. The module computes exact
+  unconstrained GMV weights without constructing or inverting the covariance matrix.
+- If `inverse_std` is omitted, the eigensystem is interpreted as belonging
+  directly to the covariance matrix.
 - Output shape is always `(..., n_assets, 1)`, normalized to sum to one along assets.
 
 ### Using `CorrelationEigenTransformLayer` Directly

@@ -74,6 +74,46 @@ def variance_loss_function(
     """
     covariance_true = torch.as_tensor(covariance_true)
     weights_predicted = torch.as_tensor(weights_predicted)
+
+    if covariance_true.ndim != 3:
+        raise ValueError(
+            "covariance_true must have rank 3 with shape "
+            "(batch_size, n_assets, n_assets); "
+            f"got shape {tuple(covariance_true.shape)}."
+        )
+    if weights_predicted.ndim != 3:
+        raise ValueError(
+            "weights_predicted must have rank 3 with shape "
+            "(batch_size, n_assets, 1); "
+            f"got shape {tuple(weights_predicted.shape)}."
+        )
+    if covariance_true.shape[-2] != covariance_true.shape[-1]:
+        raise ValueError(
+            "covariance_true must be square on the last two dimensions; "
+            f"got shape {tuple(covariance_true.shape)}."
+        )
+    if weights_predicted.shape[-1] != 1:
+        raise ValueError(
+            "weights_predicted must have singleton last dimension; "
+            f"got shape {tuple(weights_predicted.shape)}."
+        )
+    if covariance_true.shape[0] != weights_predicted.shape[0]:
+        raise ValueError(
+            "Batch mismatch between covariance_true and weights_predicted: "
+            f"covariance_true batch={covariance_true.shape[0]}, "
+            f"weights_predicted batch={weights_predicted.shape[0]}."
+        )
+    if covariance_true.shape[-1] != weights_predicted.shape[-2]:
+        raise ValueError(
+            "Asset-dimension mismatch between covariance_true and weights_predicted: "
+            f"covariance_true assets={covariance_true.shape[-1]}, "
+            f"weights_predicted assets={weights_predicted.shape[-2]}."
+        )
+    if not bool(torch.isfinite(covariance_true).all()):
+        raise ValueError("covariance_true must contain only finite values.")
+    if not bool(torch.isfinite(weights_predicted).all()):
+        raise ValueError("weights_predicted must contain only finite values.")
+
     covariance_true, _ = ensure_float32(covariance_true)
     weights_predicted, _ = ensure_float32(weights_predicted)
     covariance_true = covariance_true.to(weights_predicted.dtype)

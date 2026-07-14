@@ -19,18 +19,20 @@ NormalizationModeType = Literal["inverse", "sum"]
 
 class StandardDeviationLayer(nn.Module):
     """
-    Module for computing sample standard deviation and mean.
+    Module for computing standard deviation and mean.
 
-    This module computes the sample standard deviation and mean along a
-    specified axis. Inputs are always centered before the variance is
-    computed; ``demean`` selects the denominator convention.
+    This module computes the standard deviation and mean along a specified
+    axis. Inputs are always centered before the variance is computed;
+    ``demean`` selects the denominator convention.
 
     Parameters
     ----------
     axis : int, default 1
         Axis along which to compute statistics.
     demean : bool, default False
-        Whether to use an unbiased denominator ``n - 1``.
+        The input is always centered before variance is computed. If ``False``,
+        use the population denominator ``n``. If ``True``, use the unbiased
+        sample denominator ``n - 1``.
     epsilon : float, optional
         Small epsilon for numerical stability.
     name : str, optional
@@ -52,7 +54,9 @@ class StandardDeviationLayer(nn.Module):
         axis : int, default 1
             Axis along which to compute statistics.
         demean : bool, default False
-            Whether to use an unbiased denominator ``n - 1``.
+            The input is always centered before variance is computed. If
+            ``False``, use the population denominator ``n``. If ``True``, use
+            the unbiased sample denominator ``n - 1``.
         epsilon : float, optional
             Small epsilon for numerical stability.
         name : str, optional
@@ -68,7 +72,7 @@ class StandardDeviationLayer(nn.Module):
 
     def forward(self, x: torch.Tensor) -> Tuple[torch.Tensor, torch.Tensor]:
         """
-        Compute per-axis sample standard deviation and mean.
+        Compute per-axis standard deviation and mean.
 
         Parameters
         ----------
@@ -81,7 +85,9 @@ class StandardDeviationLayer(nn.Module):
         -------
         tuple of torch.Tensor
             ``(std, mean)`` where both tensors have the same rank as ``x`` and
-            singleton size on ``self.axis``.
+            singleton size on ``self.axis``. ``mean`` is always subtracted
+            before variance is computed; ``self.demean`` only selects the
+            denominator.
         """
         x_work, original_dtype = ensure_float32(x)
         dtype = x_work.dtype
@@ -393,6 +399,8 @@ class CustomNormalizationLayer(nn.Module):
         super().__init__()
         if name is None:
             raise ValueError("CustomNormalizationLayer must have a name.")
+        if mode not in ("sum", "inverse"):
+            raise ValueError("mode must be either 'sum' or 'inverse'.")
         if inverse_power <= 0:
             raise ValueError("inverse_power must be positive")
         self.mode = mode
@@ -567,24 +575,25 @@ class EigenProductLayer(nn.Module):
 
 class EigenWeightsLayer(nn.Module):
     """
-    Compute GMV-like portfolio weights from eigensystem quantities.
+    Compute exact unconstrained GMV weights from eigensystem quantities.
 
     This module is intended for direct external use and accepts explicit
     inputs: eigenvectors, inverse eigenvalues, and optionally inverse standard
     deviations.
 
-    Let ``V`` be eigenvectors and ``lambda_inv`` inverse eigenvalues. Define::
+    Let ``V`` be orthonormal eigenvectors, ``lambda_inv`` inverse eigenvalues,
+    and ``d`` inverse standard deviations. When ``inverse_std`` is provided,
+    the eigensystem represents a correlation matrix ``C`` and the covariance is
+    ``Sigma = diag(d^-1) C diag(d^-1)``. The raw weights are computed as::
 
-        c_k = sum_i V_{ik}
-        s_k = lambda_inv_k * c_k
+        raw = diag(d) V diag(lambda_inv) V^T d = Sigma^-1 1
 
-    The raw weights are computed as:
-    - with ``inverse_std`` provided:
-      ``raw_i = (sum_k V_{ik} s_k) * inverse_std_i``
-    - with ``inverse_std=None``:
-      ``raw_i = sum_k V_{ik} s_k``
+    This computes the exact inverse-covariance product without materializing or
+    inverting ``Sigma``. When ``inverse_std`` is omitted, the eigensystem
+    represents the covariance directly and the module computes
+    ``V diag(lambda_inv) V^T 1``.
 
-    Then the output is normalized to sum to one across assets.
+    In both cases, the output is normalized to sum to one across assets.
 
     Parameters
     ----------
@@ -623,12 +632,15 @@ class EigenWeightsLayer(nn.Module):
         Parameters
         ----------
         eigenvectors : torch.Tensor
-            Tensor of shape ``(..., n_assets, n_assets)``.
+            Orthonormal eigenvectors with shape
+            ``(..., n_assets, n_assets)``.
         inverse_eigenvalues : torch.Tensor
             Tensor of shape ``(..., n_assets)`` or ``(..., n_assets, 1)``.
         inverse_std : torch.Tensor, optional
             Optional tensor of shape ``(..., n_assets)`` or
             ``(..., n_assets, 1)`` representing inverse standard deviations.
+            When provided, the eigensystem must represent the corresponding
+            correlation matrix.
 
         Returns
         -------
@@ -640,13 +652,20 @@ class EigenWeightsLayer(nn.Module):
         device = eigenvectors_work.device
 
         inverse_eigenvalues = torch.as_tensor(inverse_eigenvalues, dtype=dtype, device=device)
-        eigenvector_sum = eigenvectors_work.sum(dim=-2)
-        target_shape = eigenvector_sum.shape
+        target_shape = eigenvectors_work.shape[:-1]
         inverse_eigenvalues = inverse_eigenvalues.reshape(target_shape)
-        spectral_term = inverse_eigenvalues * eigenvector_sum
+
+        if inverse_std is None:
+            spectral_rhs = eigenvectors_work.sum(dim=-2)
+        else:
+            inverse_std = torch.as_tensor(inverse_std, dtype=dtype, device=device).reshape(target_shape)
+            spectral_rhs = (
+                eigenvectors_work.transpose(-1, -2) @ inverse_std.unsqueeze(-1)
+            ).squeeze(-1)
+
+        spectral_term = inverse_eigenvalues * spectral_rhs
         raw_weights = (eigenvectors_work @ spectral_term.unsqueeze(-1)).squeeze(-1)
         if inverse_std is not None:
-            inverse_std = torch.as_tensor(inverse_std, dtype=dtype, device=device).reshape(target_shape)
             raw_weights = raw_weights * inverse_std
         denom = raw_weights.sum(dim=-1, keepdim=True)
         epsilon = epsilon_for_dtype(dtype, self.epsilon).to(device)
