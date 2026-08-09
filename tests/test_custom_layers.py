@@ -6,6 +6,7 @@ import torch
 
 from rienet_torch.ops_layers import (
     CovarianceLayer,
+    DimensionAwareLayer,
     EigenProductLayer,
     EigenvectorRescalingLayer,
     EigenWeightsLayer,
@@ -27,6 +28,19 @@ def test_standard_deviation_and_covariance_basic_contracts():
     cov = CovarianceLayer(normalize=True, name="cov_contract")(returns)
     assert cov.shape == (4, 3, 3)
     np.testing.assert_allclose(cov.detach().cpu().numpy(), cov.transpose(-1, -2).detach().cpu().numpy(), rtol=1e-6)
+
+
+def test_dimension_aware_q_is_n_stocks_over_n_days():
+    batch_size, n_stocks, n_days = 2, 6, 50
+    standardized_returns = torch.zeros(batch_size, n_stocks, n_days)
+    correlation_matrix = torch.eye(n_stocks).repeat(batch_size, 1, 1)
+
+    q = DimensionAwareLayer(features=["q"], name="q_ratio")(
+        [standardized_returns, correlation_matrix]
+    )
+
+    expected = torch.full_like(q, n_stocks / n_days)
+    torch.testing.assert_close(q, expected, rtol=1e-6, atol=1e-7)
 
 
 def test_spectral_decomposition_and_deep_layers_basic_contracts():
@@ -134,6 +148,54 @@ def test_eigen_weights_layer_uses_inverse_std_on_both_sides():
         expected,
         rtol=1e-6,
         atol=1e-7,
+    )
+
+
+@pytest.mark.parametrize(
+    "row_scaled",
+    [False, True],
+    ids=["orthonormal", "positive_row_scaled"],
+)
+def test_eigen_weights_layer_matches_direct_inverse_correlation(row_scaled):
+    torch.manual_seed(1234)
+    batch_size, n_assets = 3, 5
+    eigenvectors = torch.linalg.qr(
+        torch.randn(batch_size, n_assets, n_assets, dtype=torch.float64)
+    ).Q
+    eigenvalues = torch.rand(batch_size, n_assets, dtype=torch.float64) * 1.5 + 0.5
+    inverse_std = torch.rand(batch_size, n_assets, dtype=torch.float64) * 1.2 + 0.6
+
+    if row_scaled:
+        row_scale = torch.rand(batch_size, n_assets, dtype=torch.float64) * 1.5 + 0.5
+        eigenvectors = eigenvectors * row_scale.unsqueeze(-1)
+
+    weights = EigenWeightsLayer(name=f"direct_inverse_{row_scaled}")(
+        eigenvectors,
+        eigenvalues.reciprocal().unsqueeze(-1),
+        inverse_std.unsqueeze(-1),
+    )
+
+    correlation = (
+        eigenvectors
+        @ torch.diag_embed(eigenvalues)
+        @ eigenvectors.transpose(-1, -2)
+    )
+    raw_reference = inverse_std * torch.linalg.solve(
+        correlation,
+        inverse_std.unsqueeze(-1),
+    ).squeeze(-1)
+    reference = raw_reference / raw_reference.sum(dim=-1, keepdim=True)
+    torch.testing.assert_close(
+        weights.squeeze(-1),
+        reference,
+        rtol=1e-10,
+        atol=1e-12,
+    )
+    torch.testing.assert_close(
+        weights.sum(dim=-2),
+        torch.ones_like(weights.sum(dim=-2)),
+        rtol=0.0,
+        atol=1e-12,
     )
 
 

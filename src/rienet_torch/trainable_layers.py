@@ -65,6 +65,27 @@ RecurrentDirection = RecurrentDirectionType
 DimensionalFeature = Literal["n_stocks", "n_days", "q", "rsqrt_n_days"]
 
 
+def _tanhc(x: torch.Tensor) -> torch.Tensor:
+    """
+    Evaluate ``tanh(x) / x`` with its continuous value at zero.
+
+    A fourth-order series avoids the removable singularity and loss of
+    precision near zero. The crossover depends only on the active floating
+    dtype, while masked operands keep both branches and their gradients finite.
+    """
+    epsilon = epsilon_for_dtype(x.dtype, 0.0).to(x.device)
+    cutoff = torch.sqrt(torch.sqrt(epsilon))
+    use_series = x.abs() < cutoff
+
+    series_x = torch.where(use_series, x, torch.zeros_like(x))
+    x_squared = series_x.square()
+    series = torch.ones_like(x) - x_squared / 3.0 + (2.0 / 15.0) * x_squared.square()
+
+    ratio_x = torch.where(use_series, torch.ones_like(x), x)
+    ratio = torch.tanh(ratio_x) / ratio_x
+    return torch.where(use_series, series, ratio)
+
+
 class DeepLayer(nn.Module):
     """
     Multi-layer dense network with configurable activation and dropout.
@@ -777,7 +798,7 @@ class LagTransformLayer(nn.Module):
     name : str, optional
         Module name.
     eps : float, optional
-        Base epsilon used in positivity constraints and safe divisions.
+        Base epsilon used in positivity constraints.
     variant : Literal["compact", "per_lag"], default "compact"
         Parameterization variant.
         - ``"compact"``: five-scalar parameterization with dynamic lookback
@@ -787,9 +808,11 @@ class LagTransformLayer(nn.Module):
 
     Notes
     -----
-    The transformation applied in both variants is::
+    The transformation applied in both variants is
+    ``alpha * R * tanhc(beta * R)``, where::
 
-        (alpha / (beta + eps)) * tanh(beta * R)
+        tanhc(x) = tanh(x) / x
+        tanhc(0) = 1
     """
 
     _ALLOWED_VARIANTS = {"compact", "per_lag"}
@@ -812,7 +835,7 @@ class LagTransformLayer(nn.Module):
         name : str, optional
             Module name.
         eps : float, optional
-            Base epsilon used in positivity constraints and safe divisions.
+            Base epsilon used in positivity constraints.
         variant : Literal['compact', 'per_lag'], default 'compact'
             Lag parameterization mode.
         """
@@ -922,7 +945,6 @@ class LagTransformLayer(nn.Module):
             self.to(device=R.device, dtype=param_dtype)
         R_work, original_dtype = ensure_float32(R)
         dtype = R_work.dtype
-        eps_tensor = epsilon_for_dtype(dtype, self._eps_base).to(R_work.device)
 
         if self.variant == "per_lag":
             if R_work.shape[-1] != self._lookback_days:
@@ -931,9 +953,9 @@ class LagTransformLayer(nn.Module):
             alpha = self._pos(self._raw_alpha).to(dtype=dtype, device=R_work.device)
             beta = self._pos(self._raw_beta).to(dtype=dtype, device=R_work.device)
             reshape = [1] * (R_work.dim() - 1) + [T]
-            alpha_div_beta = (alpha / (beta + eps_tensor)).reshape(reshape)
+            alpha = alpha.reshape(reshape)
             beta = beta.reshape(reshape)
-            transformed = alpha_div_beta * torch.tanh(beta * R_work)
+            transformed = alpha * R_work * _tanhc(beta * R_work)
             return restore_dtype(transformed, original_dtype)
 
         T = R_work.shape[-1]
@@ -946,9 +968,9 @@ class LagTransformLayer(nn.Module):
         alpha = c0 * torch.pow(t, -c1)
         beta = c2 - c3 * torch.exp(-c4 * t)
         reshape = [1] * (R_work.dim() - 1) + [T]
-        alpha_div_beta = (alpha / (beta + eps_tensor)).reshape(reshape)
+        alpha = alpha.reshape(reshape)
         beta = beta.reshape(reshape)
-        transformed = alpha_div_beta * torch.tanh(beta * R_work)
+        transformed = alpha * R_work * _tanhc(beta * R_work)
         return restore_dtype(transformed, original_dtype)
 
     def get_config(self) -> dict:
@@ -997,7 +1019,8 @@ class RIEnetLayer(nn.Module):
         Direction used by the recurrent cleaning block.
     dimensional_features : Sequence[Literal['n_stocks', 'n_days', 'q', 'rsqrt_n_days']], optional
         Dimension-aware features concatenated to eigenvalues before recurrent
-        cleaning.
+        cleaning. The ``'q'`` feature is defined as
+        ``n_stocks / n_days``.
     lag_transform_variant : Literal['compact', 'per_lag'], default 'compact'
         Lag transformation parameterization.
     normalize_transformed_variance : bool, default True
@@ -1047,7 +1070,8 @@ class RIEnetLayer(nn.Module):
         recurrent_direction : Literal['bidirectional', 'forward', 'backward'], default 'bidirectional'
             Direction mode of the recurrent cleaning block.
         dimensional_features : Sequence[Literal['n_stocks', 'n_days', 'q', 'rsqrt_n_days']], optional
-            Additional features concatenated before eigenvalue cleaning.
+            Additional features concatenated before eigenvalue cleaning. The
+            ``'q'`` feature is defined as ``n_stocks / n_days``.
         normalize_transformed_variance : bool, default True
             If True, rescales transformed inverse volatilities so that the
             implied covariance diagonal is centered around 1.

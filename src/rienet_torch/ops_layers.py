@@ -265,7 +265,8 @@ class DimensionAwareLayer(nn.Module):
     ----------
     features : list of str
         List of features to add: ``'n_stocks'``, ``'n_days'``, ``'q'``,
-        ``'rsqrt_n_days'``.
+        ``'rsqrt_n_days'``. Here ``q`` is the ratio
+        ``n_stocks / n_days``.
     name : str, optional
         Module name.
     """
@@ -326,7 +327,7 @@ class DimensionAwareLayer(nn.Module):
 
         tensors_to_concat: List[torch.Tensor] = []
         if "q" in self.features:
-            tensors_to_concat.append(self._set_attribute(n_days / n_stocks, final_shape, target_dtype, device))
+            tensors_to_concat.append(self._set_attribute(n_stocks / n_days, final_shape, target_dtype, device))
         if "n_stocks" in self.features:
             tensors_to_concat.append(self._set_attribute(torch.sqrt(n_stocks), final_shape, target_dtype, device))
         if "n_days" in self.features:
@@ -581,17 +582,18 @@ class EigenWeightsLayer(nn.Module):
     inputs: eigenvectors, inverse eigenvalues, and optionally inverse standard
     deviations.
 
-    Let ``V`` be orthonormal eigenvectors, ``lambda_inv`` inverse eigenvalues,
+    Let ``U`` contain either orthonormal eigenvectors ``V`` or positive
+    row-scaled eigenvectors ``U = S V``, ``lambda_inv`` be inverse eigenvalues,
     and ``d`` inverse standard deviations. When ``inverse_std`` is provided,
-    the eigensystem represents a correlation matrix ``C`` and the covariance is
-    ``Sigma = diag(d^-1) C diag(d^-1)``. The raw weights are computed as::
+    define ``r_i = ||U_i||^-2``. The raw weights are computed as::
 
-        raw = diag(d) V diag(lambda_inv) V^T d = Sigma^-1 1
+        raw = d * r * U diag(lambda_inv) U^T (r * d)
 
-    This computes the exact inverse-covariance product without materializing or
-    inverting ``Sigma``. When ``inverse_std`` is omitted, the eigensystem
-    represents the covariance directly and the module computes
-    ``V diag(lambda_inv) V^T 1``.
+    For orthonormal eigenvectors ``r`` is one, so the expression reduces to the
+    standard formula automatically. This computes exact GMV weights without
+    materializing or inverting the covariance matrix. When ``inverse_std`` is
+    omitted, the eigensystem represents the covariance directly and the module
+    computes ``V diag(lambda_inv) V^T 1``.
 
     In both cases, the output is normalized to sum to one across assets.
 
@@ -632,8 +634,8 @@ class EigenWeightsLayer(nn.Module):
         Parameters
         ----------
         eigenvectors : torch.Tensor
-            Orthonormal eigenvectors with shape
-            ``(..., n_assets, n_assets)``.
+            Orthonormal or positive row-scaled orthonormal eigenvectors with
+            shape ``(..., n_assets, n_assets)``.
         inverse_eigenvalues : torch.Tensor
             Tensor of shape ``(..., n_assets)`` or ``(..., n_assets, 1)``.
         inverse_std : torch.Tensor, optional
@@ -654,21 +656,28 @@ class EigenWeightsLayer(nn.Module):
         inverse_eigenvalues = torch.as_tensor(inverse_eigenvalues, dtype=dtype, device=device)
         target_shape = eigenvectors_work.shape[:-1]
         inverse_eigenvalues = inverse_eigenvalues.reshape(target_shape)
+        epsilon = epsilon_for_dtype(dtype, self.epsilon).to(device)
 
         if inverse_std is None:
             spectral_rhs = eigenvectors_work.sum(dim=-2)
         else:
             inverse_std = torch.as_tensor(inverse_std, dtype=dtype, device=device).reshape(target_shape)
+            inverse_row_norm_sq = torch.reciprocal(
+                torch.maximum(
+                    eigenvectors_work.square().sum(dim=-1),
+                    epsilon,
+                )
+            )
             spectral_rhs = (
-                eigenvectors_work.transpose(-1, -2) @ inverse_std.unsqueeze(-1)
+                eigenvectors_work.transpose(-1, -2)
+                @ (inverse_row_norm_sq * inverse_std).unsqueeze(-1)
             ).squeeze(-1)
 
         spectral_term = inverse_eigenvalues * spectral_rhs
         raw_weights = (eigenvectors_work @ spectral_term.unsqueeze(-1)).squeeze(-1)
         if inverse_std is not None:
-            raw_weights = raw_weights * inverse_std
+            raw_weights = raw_weights * inverse_std * inverse_row_norm_sq
         denom = raw_weights.sum(dim=-1, keepdim=True)
-        epsilon = epsilon_for_dtype(dtype, self.epsilon).to(device)
         sign = torch.where(denom >= 0, torch.ones_like(denom), -torch.ones_like(denom))
         safe_denom = torch.where(denom.abs() < epsilon, sign * epsilon, denom)
         weights = raw_weights / safe_denom

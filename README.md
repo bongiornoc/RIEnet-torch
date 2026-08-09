@@ -18,6 +18,24 @@ For the original TensorFlow implementation, see the [RIEnet repository](https://
 
 ## Release Notes
 
+### 0.1.5
+
+This release fixes three correctness issues found during parity review against
+the TensorFlow implementation:
+
+- `EigenWeightsLayer` now computes exact GMV weights for both orthonormal and
+  positive row-scaled eigenvectors when `inverse_std` is provided.
+- The dimension-aware `q` feature now uses the random-matrix ratio
+  `n_stocks / n_days` instead of its reciprocal. This affects the default
+  `RIEnetLayer` configuration.
+- `LagTransformLayer` now evaluates the continuous `tanh(x) / x` form near
+  zero, preventing the compact branch from exploding near `beta = -epsilon`
+  and removing the factor-of-two bias in the per-lag small-beta limit.
+
+Users should upgrade to 0.1.5. Existing checkpoints trained with the previous
+`q` definition should be evaluated carefully because their dimensional input
+semantics have changed.
+
 ### 0.1.4
 
 This release fixes a correctness bug in `EigenWeightsLayer` when `inverse_std`
@@ -210,8 +228,10 @@ weights_cov = layer(eigenvectors, inverse_eigenvalues)
 Notes:
 - `inverse_std` is optional by design.
 - When `inverse_std` is provided, the eigenvectors and inverse eigenvalues must
-  describe the corresponding correlation matrix. The module computes exact
-  unconstrained GMV weights without constructing or inverting the covariance matrix.
+  describe the corresponding correlation matrix. Eigenvectors may be
+  orthonormal or positive row-scaled orthonormal vectors. The module computes
+  exact unconstrained GMV weights without constructing or inverting the
+  covariance matrix.
 - If `inverse_std` is omitted, the eigensystem is interpreted as belonging
   directly to the covariance matrix.
 - Output shape is always `(..., n_assets, 1)`, normalized to sum to one along assets.

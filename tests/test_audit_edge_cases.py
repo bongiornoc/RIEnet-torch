@@ -1,15 +1,148 @@
 from __future__ import annotations
 
+import math
 from pathlib import Path
 
 import pytest
 import torch
 
+from rienet_torch.dtype_utils import epsilon_for_dtype
 from rienet_torch.losses import variance_loss_function
 from rienet_torch.ops_layers import CustomNormalizationLayer, StandardDeviationLayer
 from rienet_torch.rnn import KerasGRULayer
 from rienet_torch.serialization import load_module, save_module
-from rienet_torch.trainable_layers import CorrelationEigenTransformLayer, DeepLayer, RIEnetLayer
+from rienet_torch.trainable_layers import (
+    CorrelationEigenTransformLayer,
+    DeepLayer,
+    LagTransformLayer,
+    RIEnetLayer,
+    _tanhc,
+)
+
+
+@pytest.mark.parametrize(
+    ("dtype", "rtol", "atol"),
+    [
+        (torch.float32, 2e-6, 2e-7),
+        (torch.float64, 2e-13, 2e-15),
+    ],
+    ids=["float32", "float64"],
+)
+def test_tanhc_is_accurate_and_finite_across_numerical_regimes(dtype, rtol, atol):
+    values = torch.tensor(
+        [
+            -100.0,
+            -1.0,
+            -2e-2,
+            -1e-4,
+            -1e-12,
+            -1e-40,
+            0.0,
+            1e-40,
+            1e-12,
+            1e-4,
+            2e-2,
+            1.0,
+            100.0,
+        ],
+        dtype=dtype,
+    )
+    expected = torch.ones_like(values)
+    nonzero = values != 0
+    expected[nonzero] = torch.tanh(values[nonzero]) / values[nonzero]
+
+    actual = _tanhc(values)
+
+    assert torch.isfinite(actual).all()
+    torch.testing.assert_close(actual, expected, rtol=rtol, atol=atol)
+    assert float(actual[6]) == 1.0
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.float64], ids=["float32", "float64"])
+def test_tanhc_gradients_are_finite_at_and_near_zero(dtype):
+    values = torch.tensor(
+        [-1e-4, -1e-12, 0.0, 1e-12, 1e-4],
+        dtype=dtype,
+        requires_grad=True,
+    )
+
+    output = _tanhc(values)
+    gradient = torch.autograd.grad(output.sum(), values)[0]
+
+    assert torch.isfinite(output).all()
+    assert torch.isfinite(gradient).all()
+    assert output[2].detach().item() == 1.0
+    assert gradient[2].detach().item() == 0.0
+
+
+def _assign_positive_layer_parameter(layer, parameter, target):
+    floor = float(epsilon_for_dtype(parameter.dtype, layer._eps_base))
+    with torch.no_grad():
+        parameter.fill_(layer._inv_softplus(float(target) - floor))
+
+
+def test_compact_lag_transform_is_finite_at_old_negative_epsilon_singularity():
+    layer = LagTransformLayer(variant="compact", name="compact_beta_singularity")
+    returns = torch.tensor(
+        [[[-1000.0], [0.0], [1000.0]]],
+        dtype=torch.float64,
+        requires_grad=True,
+    )
+    _ = layer(returns)
+
+    floor = float(epsilon_for_dtype(torch.float64, layer._eps_base))
+    _assign_positive_layer_parameter(layer, layer._raw_c0, 2.0)
+    _assign_positive_layer_parameter(layer, layer._raw_c1, 0.2)
+    _assign_positive_layer_parameter(layer, layer._raw_c3, 1.0)
+    _assign_positive_layer_parameter(layer, layer._raw_c4, 0.1)
+    _assign_positive_layer_parameter(
+        layer,
+        layer._raw_c2,
+        math.exp(-0.1) - floor,
+    )
+
+    output = layer(returns)
+    parameters = list(layer.parameters())
+    gradients = torch.autograd.grad(output.square().sum(), [returns, *parameters])
+
+    beta = layer._pos(layer._raw_c2) - layer._pos(layer._raw_c3) * torch.exp(
+        -layer._pos(layer._raw_c4)
+    )
+    alpha = layer._pos(layer._raw_c0)
+    expected_limit = alpha * returns
+
+    torch.testing.assert_close(
+        beta,
+        torch.tensor(-floor, dtype=beta.dtype),
+        rtol=0.0,
+        atol=2e-15,
+    )
+    assert torch.isfinite(output).all()
+    torch.testing.assert_close(output, expected_limit, rtol=5e-9, atol=1e-12)
+    assert all(torch.isfinite(gradient).all() for gradient in gradients)
+
+
+def test_per_lag_transform_is_finite_at_smallest_positive_beta():
+    layer = LagTransformLayer(variant="per_lag", name="per_lag_small_beta")
+    returns = torch.tensor(
+        [[[-1000.0, -1.0, 0.0, 1.0, 1000.0]]],
+        dtype=torch.float32,
+        requires_grad=True,
+    )
+    _ = layer(returns)
+    with torch.no_grad():
+        layer._raw_beta.fill_(-100.0)
+
+    output = layer(returns)
+    parameters = list(layer.parameters())
+    gradients = torch.autograd.grad(output.square().sum(), [returns, *parameters])
+
+    alpha = layer._pos(layer._raw_alpha).reshape(1, 1, -1)
+    expected_limit = alpha * returns
+
+    assert torch.isfinite(output).all()
+    torch.testing.assert_close(output, expected_limit, rtol=2e-6, atol=2e-6)
+    assert all(torch.isfinite(gradient).all() for gradient in gradients)
 
 
 def test_sum_normalization_preserves_negative_denominator_sign():
